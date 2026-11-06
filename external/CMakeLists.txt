@@ -49,3 +49,22 @@ if(NOT WITH_SYSTEM_LIBRAW)
 else()
     target_link_libraries(RtLibRaw INTERFACE PkgConfig::LIBRAW)
 endif()
+
+# DNG SDK support for JXL-compressed DNG files
+if(WITH_DNG_SDK)
+    set(INJECT_DNG_LIBS
+        "${DNG_SDK_INSTALL_DIR}/lib/libdng_sdk.a"
+        "${DNG_SDK_INSTALL_DIR}/lib/libXMPFilesStatic.a"
+        "${DNG_SDK_INSTALL_DIR}/lib/libXMPCoreStatic.a"
+        "jxl"          
+        "jxl_threads" 
+        "jpeg" 
+        "expat"
+        "z"        
+    )
+    message("DNG_SDK_INSTALL_DIR = ${DNG_SDK_INSTALL_DIR}")
+    target_include_directories(RtLibRaw INTERFACE "${DNG_SDK_INSTALL_DIR}/include/dng_sdk")
+    target_compile_definitions(RtLibRaw INTERFACE USE_DNGSDK)
+    target_link_libraries(RtLibRaw INTERFACE ${INJECT_DNG_LIBS}
+    )
+endif()

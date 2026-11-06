@@ -15,6 +15,11 @@
 
 #include <libraw/libraw.h>
 
+#ifdef USE_DNGSDK
+#include "dng_host.h"
+dng_host *dnghost;
+#endif
+
 #include "image8.h"
 #include "rawimage.h"
 #include "settings.h"
@@ -196,6 +201,15 @@ RawImage::~RawImage()
         delete [] profile_data;
         profile_data = nullptr;
     }
+    // libraw must be destroyed before dnghost, because DNG SDK objects
+    // (dngnegative/dngimage) held by libraw were allocated via the host.
+    libraw.reset();
+#ifdef USE_DNGSDK
+    if (dnghost) {
+        delete static_cast<dng_host *>(dnghost);
+        dnghost = nullptr;
+    }
+#endif
 }
 
 void RawImage::pre_interpolate()
@@ -615,6 +629,10 @@ int RawImage::loadRaw(bool loadData, unsigned int imageNum, bool closeFile, Prog
 
     if (settings->enableLibRaw) {
         libraw.reset(new LibRaw());
+#ifdef USE_DNGSDK
+        dng_host *dnghost = new dng_host;
+        libraw->set_dng_host(dnghost);
+#endif
     }
     int libraw_error = [&]() -> int {
         if (!settings->enableLibRaw) {
@@ -651,7 +669,11 @@ int RawImage::loadRaw(bool loadData, unsigned int imageNum, bool closeFile, Prog
         } else if (err != LIBRAW_SUCCESS) {
             decoder = Decoder::LIBRAW;
             return err;
-        } else if (libraw->is_floating_point() && libraw->imgdata.idata.dng_version && libraw->imgdata.idata.filters) {
+        } else if (libraw->is_floating_point() && libraw->imgdata.idata.dng_version && libraw->imgdata.idata.filters
+#ifdef USE_DNGSDK
+            && strncmp(libraw->unpack_function_name(), "jxl_dng_load_raw", 16) != 0
+#endif
+        ) {
             return err;
         }
 
@@ -985,6 +1007,45 @@ int RawImage::loadRaw(bool loadData, unsigned int imageNum, bool closeFile, Prog
                 image = libraw->imgdata.image;
             }
 
+            // DNG SDK may have cropped the image (e.g. JXL DNG Stage 2),
+            // so sync filters, colors, and sizes which may have changed.
+            if (dng_version) {
+                auto &s = libraw->imgdata.sizes;
+                filters = libraw->imgdata.idata.filters;
+                colors = libraw->imgdata.idata.colors;
+                raw_width = s.raw_width;
+                raw_height = s.raw_height;
+                top_margin = s.top_margin;
+                left_margin = s.left_margin;
+
+                if (dng_version && (libraw->imgdata.process_warnings & LIBRAW_WARN_DNGSDK_PROCESSED)) {
+                    // Stage2 decoded data: black level subtracted.
+                    for (int i = 0; i < 4; ++i) {
+                        cblack[i] = 0;
+                        libraw->imgdata.color.cblack[i] = 0;
+                        libraw->imgdata.rawdata.color.cblack[i] = 0;
+                    }
+                    cblack[4] = cblack[5] = 0;
+                    libraw->imgdata.color.cblack[4] = libraw->imgdata.color.cblack[5] = 0;
+                    libraw->imgdata.rawdata.color.cblack[4] = libraw->imgdata.rawdata.color.cblack[5] = 0;
+
+                    if (libraw->is_floating_point()) {
+                        // Float data from JXL is [0,1] normalized.  Set max=1
+                        // so scale_mul = 65535 / (1 - 0) = 65535, converting
+                        // [0,1] float to 16-bit display range.
+                        libraw->imgdata.color.maximum = 1;
+                        libraw->imgdata.rawdata.color.maximum = 1;
+                        maximum = 1;
+                    } 
+                    else {
+                        // Integer data: JXL decode already in full 16-bit range.
+                        libraw->imgdata.color.maximum = 65535;
+                        libraw->imgdata.rawdata.color.maximum = 65535;
+                        maximum = 65535;
+                    }
+                }
+            }
+
             // get our custom camera matrices, but don't mess with black/white levels yet
             // (if we have custom levels in json files, we will get them later)
             auto bl = RT_blacklevel_from_constant;
@@ -1138,7 +1199,9 @@ int RawImage::loadRaw(bool loadData, unsigned int imageNum, bool closeFile, Prog
                 crop_masked_pixels();
                 free(raw_image);
             } else if (decoder == Decoder::LIBRAW) {
-                if (has_raw_mask) {
+                // The mask-based calculation would compute wrong values from
+                // the DNG SDK decoded raw data.
+                if (has_raw_mask && !dng_version) {
                     calculate_black_from_mask(mask, cblack, raw_image, raw_height, raw_width, top_margin, left_margin, filters);
                 }
             }
@@ -1237,10 +1300,15 @@ int RawImage::loadRaw(bool loadData, unsigned int imageNum, bool closeFile, Prog
             white_from_cc = true;
         }
 
-        for (int c = 0; c < 4; c++) {
-            if (static_cast<int>(cblack[c]) < black_c4[c]) {
-                cblack[c] = black_c4[c];
-                cblack[4] = cblack[5] = 0;
+        // For DNG files, keep cblack from the DNG metadata (already
+        // per-channel with correct repeat pattern), don't override
+        // with camconst or global black.
+        if (!dng_version) {
+            for (int c = 0; c < 4; c++) {
+                if (static_cast<int>(cblack[c]) < black_c4[c]) {
+                    cblack[c] = black_c4[c];
+                    cblack[4] = cblack[5] = 0;
+                }
             }
         }
 

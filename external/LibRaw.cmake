@@ -40,6 +40,13 @@ set(CONFIGURE_FLAGS "${CONFIGURE_FLAGS} CC=\"${CMAKE_C_COMPILER}\"")
 set(CONFIGURE_FLAGS "${CONFIGURE_FLAGS} CXX=\"${CMAKE_CXX_COMPILER}\"")
 set(CONFIGURE_FLAGS "${CONFIGURE_FLAGS} CXXFLAGS=\"${LIBRAW_CXX_FLAGS} -DCMS_NO_REGISTER_KEYWORD=1\"")
 
+# DNG SDK support for JXL-compressed DNG files
+if(WITH_DNG_SDK)
+    set(CONFIGURE_FLAGS "${CONFIGURE_FLAGS} CPPFLAGS=\"-I${DNG_SDK_INSTALL_DIR}/include/dng_sdk -DUSE_DNGSDK\"")
+    set(CONFIGURE_FLAGS "${CONFIGURE_FLAGS} LDFLAGS=\"-L${DNG_SDK_INSTALL_DIR}/lib\"")
+    set(CONFIGURE_FLAGS "${CONFIGURE_FLAGS} LIBS=\"-ldng_sdk -lXMPFilesStatic -lXMPCoreStatic -ljxl -ljxl_threads -lexpat -ljpeg -lz\"")
+endif()
+
 # Configuration commands.
 message(STATUS "Configuring LibRaw")
 execute_process(
